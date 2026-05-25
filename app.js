@@ -137,16 +137,19 @@ function makeCustomItem(item, eventId, onUpdate) {
 
 // ── Category block ─────────────────────────────────────────
 
-function makeCategoryBlock(cat, eventId, onChange) {
+function makeCategoryBlock(cat, eventId, onChange, showTitle = true) {
   const div = document.createElement('div');
   div.className = 'category';
-  const title = document.createElement('div');
-  title.className = 'cat-title';
-  title.textContent = cat.icon + ' ' + cat.name;
+  if (showTitle) {
+    const title = document.createElement('div');
+    title.className = 'cat-title';
+    title.textContent = cat.icon + ' ' + cat.name;
+    div.appendChild(title);
+  }
   const ul = document.createElement('ul');
   ul.className = 'checklist';
   cat.items.forEach(item => ul.appendChild(makeCheckItem(item, eventId, onChange)));
-  div.append(title, ul);
+  div.appendChild(ul);
   return div;
 }
 
@@ -207,7 +210,7 @@ function renderBasisTab() {
       const { checked, total } = calcItems(cat.items, 'basis');
       setBadge(badge, checked, total);
     };
-    body.appendChild(makeCategoryBlock(cat, 'basis', () => { refresh(); refreshProgress('basis'); }));
+    body.appendChild(makeCategoryBlock(cat, 'basis', () => { refresh(); refreshProgress('basis'); }, false));
     refresh();
     root.appendChild(sec);
   });

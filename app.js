@@ -69,7 +69,7 @@ function calcItems(items, eventId) {
   return { checked: visible.filter(i => s[i.id]).length, total: visible.length };
 }
 
-// ── Checkbox item (predefined) ────────────────────────────
+// ── Predefined checkbox item ──────────────────────────────
 
 function makeCheckItem(item, eventId, onChange) {
   const s = getState(eventId);
@@ -118,56 +118,11 @@ function makeCheckItem(item, eventId, onChange) {
   return li;
 }
 
-// ── Custom item ────────────────────────────────────────────
+// ── Category block with inline custom items + add row ─────
 
-function makeCustomItem(item, eventId, onUpdate) {
-  const li = document.createElement('li');
-  li.className = 'check-item';
-
-  const label = document.createElement('label');
-  if (item.checked) label.classList.add('checked');
-
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  cb.checked = !!item.checked;
-
-  const span = document.createElement('span');
-  span.className = 'item-text';
-  span.textContent = item.text;
-
-  const del = document.createElement('button');
-  del.className = 'btn-del';
-  del.textContent = '✕';
-  del.title = 'Löschen';
-
-  label.append(cb, span);
-  li.append(label, del);
-
-  cb.addEventListener('change', () => {
-    const s = getState(eventId);
-    const idx = (s.custom_items || []).findIndex(c => c.id === item.id);
-    if (idx !== -1) s.custom_items[idx].checked = cb.checked;
-    saveState(eventId, s);
-    label.classList.toggle('checked', cb.checked);
-    refreshProgress(eventId);
-  });
-
-  del.addEventListener('click', () => {
-    const s = getState(eventId);
-    s.custom_items = (s.custom_items || []).filter(c => c.id !== item.id);
-    saveState(eventId, s);
-    onUpdate();
-    refreshProgress(eventId);
-  });
-
-  return li;
-}
-
-// ── Category block ─────────────────────────────────────────
-
-function makeCategoryBlock(cat, eventId, onChange, showTitle = true) {
+function makeCategoryBlock(cat, eventId, onBadgeChange, showTitle = true) {
   const removed = getRemovedItems(eventId);
-  const visibleItems = cat.items.filter(i => !removed.has(i.id));
+  const visiblePredefined = cat.items.filter(i => !removed.has(i.id));
 
   const div = document.createElement('div');
   div.className = 'category';
@@ -181,8 +136,100 @@ function makeCategoryBlock(cat, eventId, onChange, showTitle = true) {
 
   const ul = document.createElement('ul');
   ul.className = 'checklist';
-  visibleItems.forEach(item => ul.appendChild(makeCheckItem(item, eventId, onChange)));
+
+  // Predefined items
+  visiblePredefined.forEach(item => ul.appendChild(makeCheckItem(item, eventId, onBadgeChange)));
+
+  // Inline custom items for this category
+  function renderCustomItems() {
+    ul.querySelectorAll('li.custom-li').forEach(el => el.remove());
+    const s = getState(eventId);
+    (s.custom_items || [])
+      .filter(item => item.category === cat.id)
+      .forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'check-item custom-li';
+
+        const label = document.createElement('label');
+        if (item.checked) label.classList.add('checked');
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!item.checked;
+
+        const span = document.createElement('span');
+        span.className = 'item-text';
+        span.textContent = item.text;
+
+        const del = document.createElement('button');
+        del.className = 'btn-del';
+        del.textContent = '✕';
+        del.title = 'Löschen';
+
+        label.append(cb, span);
+        li.append(label, del);
+
+        cb.addEventListener('change', () => {
+          const ns = getState(eventId);
+          const idx = (ns.custom_items || []).findIndex(c => c.id === item.id);
+          if (idx !== -1) ns.custom_items[idx].checked = cb.checked;
+          saveState(eventId, ns);
+          label.classList.toggle('checked', cb.checked);
+          refreshProgress(eventId);
+        });
+
+        del.addEventListener('click', () => {
+          const ns = getState(eventId);
+          ns.custom_items = (ns.custom_items || []).filter(c => c.id !== item.id);
+          saveState(eventId, ns);
+          li.remove();
+          refreshProgress(eventId);
+        });
+
+        ul.appendChild(li);
+      });
+  }
+
+  renderCustomItems();
   div.appendChild(ul);
+
+  // Inline add row
+  const addRow = document.createElement('div');
+  addRow.className = 'cat-add-row';
+
+  const addInput = document.createElement('input');
+  addInput.type = 'text';
+  addInput.className = 'cat-add-input';
+  addInput.placeholder = 'Item hinzufügen…';
+  addInput.maxLength = 120;
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'cat-add-btn';
+  addBtn.textContent = '+';
+  addBtn.title = 'Hinzufügen';
+
+  addRow.append(addInput, addBtn);
+  div.appendChild(addRow);
+
+  function doAdd() {
+    const text = addInput.value.trim();
+    if (!text) { addInput.focus(); return; }
+    const s = getState(eventId);
+    if (!s.custom_items) s.custom_items = [];
+    s.custom_items.push({
+      id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+      text, checked: false, category: cat.id
+    });
+    saveState(eventId, s);
+    addInput.value = '';
+    addInput.focus();
+    renderCustomItems();
+    refreshProgress(eventId);
+  }
+
+  addBtn.addEventListener('click', doAdd);
+  addInput.addEventListener('keydown', e => { if (e.key === 'Enter') doAdd(); });
+
   return div;
 }
 
@@ -247,7 +294,6 @@ function renderBasisTab() {
     root.appendChild(sec);
   });
 
-  // Restore link for basis
   root.appendChild(makeRestoreLink('basis'));
 
   requestAnimationFrame(() => refreshProgress('basis'));
@@ -313,109 +359,7 @@ function renderTripTab(ev) {
     root.appendChild(eSec);
   }
 
-  // Custom items section
-  const customSec = document.createElement('div');
-  customSec.className = 'section open custom-section';
-  customSec.style.display = 'none';
-
-  const customHdr = document.createElement('div');
-  customHdr.className = 'section-header';
-  customHdr.style.cursor = 'default';
-  customHdr.innerHTML = '<div class="section-title">✏️ Eigene Einträge</div>';
-
-  const customBody = document.createElement('div');
-  customBody.className = 'section-body';
-
-  customSec.append(customHdr, customBody);
-  root.appendChild(customSec);
-
-  function renderCustoms() {
-    customBody.innerHTML = '';
-    const s = getState(ev.id);
-    const customs = s.custom_items || [];
-    if (customs.length === 0) { customSec.style.display = 'none'; return; }
-    customSec.style.display = '';
-
-    const grouped = {};
-    customs.forEach(item => {
-      const k = item.category || 'diverses';
-      if (!grouped[k]) grouped[k] = [];
-      grouped[k].push(item);
-    });
-
-    BASE_ESSENTIALS.forEach(cat => {
-      if (!grouped[cat.id]) return;
-      const div = document.createElement('div');
-      div.className = 'category';
-      const t = document.createElement('div');
-      t.className = 'cat-title';
-      t.textContent = cat.icon + ' ' + cat.name;
-      const ul = document.createElement('ul');
-      ul.className = 'checklist';
-      grouped[cat.id].forEach(item => ul.appendChild(makeCustomItem(item, ev.id, () => {
-        renderCustoms(); refreshProgress(ev.id);
-      })));
-      div.append(t, ul);
-      customBody.appendChild(div);
-    });
-  }
-  renderCustoms();
-
-  // Add custom input
-  const addDiv = document.createElement('div');
-  addDiv.className = 'add-custom';
-
-  const addTitle = document.createElement('div');
-  addTitle.className = 'add-custom-title';
-  addTitle.textContent = 'Eigene Items hinzufügen';
-
-  const addRow = document.createElement('div');
-  addRow.className = 'add-row';
-
-  const sel = document.createElement('select');
-  sel.className = 'add-select';
-  BASE_ESSENTIALS.forEach(cat => {
-    const o = document.createElement('option');
-    o.value = cat.id;
-    o.textContent = cat.icon + ' ' + cat.name;
-    sel.appendChild(o);
-  });
-
-  const inp = document.createElement('input');
-  inp.type = 'text';
-  inp.className = 'add-input';
-  inp.placeholder = 'Neues Item eingeben…';
-  inp.maxLength = 120;
-
-  const addBtn = document.createElement('button');
-  addBtn.className = 'btn-add';
-  addBtn.textContent = '+ Hinzufügen';
-
-  addRow.append(sel, inp, addBtn);
-  addDiv.append(addTitle, addRow);
-  root.appendChild(addDiv);
-
-  // Restore deleted items link
   root.appendChild(makeRestoreLink(ev.id));
-
-  function doAdd() {
-    const text = inp.value.trim();
-    if (!text) { inp.focus(); return; }
-    const s = getState(ev.id);
-    if (!s.custom_items) s.custom_items = [];
-    s.custom_items.push({
-      id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
-      text, checked: false, category: sel.value
-    });
-    saveState(ev.id, s);
-    inp.value = '';
-    inp.focus();
-    renderCustoms();
-    refreshProgress(ev.id);
-  }
-
-  addBtn.addEventListener('click', doAdd);
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter') doAdd(); });
 
   requestAnimationFrame(() => refreshProgress(ev.id));
   return root;
@@ -426,11 +370,7 @@ function renderTripTab(ev) {
 function makeRestoreLink(eventId) {
   const wrap = document.createElement('div');
   wrap.className = 'restore-wrap';
-
-  function updateVisibility() {
-    const removed = getRemovedItems(eventId);
-    wrap.style.display = removed.size > 0 ? '' : 'none';
-  }
+  wrap.style.display = getRemovedItems(eventId).size > 0 ? '' : 'none';
 
   const link = document.createElement('button');
   link.className = 'btn-restore';
@@ -440,13 +380,11 @@ function makeRestoreLink(eventId) {
     const s = getState(eventId);
     s.removed_items = [];
     saveState(eventId, s);
-    // Force full re-render of current tab
     activeTab = null;
     switchTab(eventId);
   });
 
   wrap.appendChild(link);
-  updateVisibility();
   return wrap;
 }
 

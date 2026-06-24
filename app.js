@@ -17,20 +17,30 @@ function esc(str) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+function getRemovedItems(id) {
+  return new Set(getState(id).removed_items || []);
+}
+
 // ── Progress ─────────────────────────────────────────────
 
 function calcProgress(eventId) {
   const s = getState(eventId);
+  const removed = new Set(s.removed_items || []);
   let total = 0, checked = 0;
+
   BASE_ESSENTIALS.forEach(cat => cat.items.forEach(item => {
+    if (removed.has(item.id)) return;
     total++; if (s[item.id]) checked++;
   }));
+
   if (eventId !== 'basis') {
     const ev = EVENTS.find(e => e.id === eventId);
     if (ev) ev.extras.forEach(cat => cat.items.forEach(item => {
+      if (removed.has(item.id)) return;
       total++; if (s[item.id]) checked++;
     }));
   }
+
   (s.custom_items || []).forEach(item => { total++; if (item.checked) checked++; });
   return { checked, total };
 }
@@ -54,10 +64,12 @@ function setBadge(el, checked, total) {
 
 function calcItems(items, eventId) {
   const s = getState(eventId);
-  return { checked: items.filter(i => s[i.id]).length, total: items.length };
+  const removed = new Set(s.removed_items || []);
+  const visible = items.filter(i => !removed.has(i.id));
+  return { checked: visible.filter(i => s[i.id]).length, total: visible.length };
 }
 
-// ── Checkbox item ─────────────────────────────────────────
+// ── Checkbox item (predefined) ────────────────────────────
 
 function makeCheckItem(item, eventId, onChange) {
   const s = getState(eventId);
@@ -75,14 +87,30 @@ function makeCheckItem(item, eventId, onChange) {
   span.className = 'item-text';
   span.textContent = item.text;
 
+  const del = document.createElement('button');
+  del.className = 'btn-del';
+  del.textContent = '✕';
+  del.title = 'Item ausblenden';
+
   label.append(cb, span);
-  li.appendChild(label);
+  li.append(label, del);
 
   cb.addEventListener('change', () => {
     const ns = getState(eventId);
     ns[item.id] = cb.checked;
     saveState(eventId, ns);
     label.classList.toggle('checked', cb.checked);
+    refreshProgress(eventId);
+    if (onChange) onChange();
+  });
+
+  del.addEventListener('click', () => {
+    const ns = getState(eventId);
+    if (!ns.removed_items) ns.removed_items = [];
+    if (!ns.removed_items.includes(item.id)) ns.removed_items.push(item.id);
+    delete ns[item.id];
+    saveState(eventId, ns);
+    li.remove();
     refreshProgress(eventId);
     if (onChange) onChange();
   });
@@ -138,17 +166,22 @@ function makeCustomItem(item, eventId, onUpdate) {
 // ── Category block ─────────────────────────────────────────
 
 function makeCategoryBlock(cat, eventId, onChange, showTitle = true) {
+  const removed = getRemovedItems(eventId);
+  const visibleItems = cat.items.filter(i => !removed.has(i.id));
+
   const div = document.createElement('div');
   div.className = 'category';
+
   if (showTitle) {
     const title = document.createElement('div');
     title.className = 'cat-title';
     title.textContent = cat.icon + ' ' + cat.name;
     div.appendChild(title);
   }
+
   const ul = document.createElement('ul');
   ul.className = 'checklist';
-  cat.items.forEach(item => ul.appendChild(makeCheckItem(item, eventId, onChange)));
+  visibleItems.forEach(item => ul.appendChild(makeCheckItem(item, eventId, onChange)));
   div.appendChild(ul);
   return div;
 }
@@ -172,7 +205,6 @@ function makeSection(titleHtml, isOpen, collapsible) {
 
   const badge = document.createElement('span');
   badge.className = 'section-badge';
-
   right.appendChild(badge);
 
   if (collapsible) {
@@ -214,6 +246,9 @@ function renderBasisTab() {
     refresh();
     root.appendChild(sec);
   });
+
+  // Restore link for basis
+  root.appendChild(makeRestoreLink('basis'));
 
   requestAnimationFrame(() => refreshProgress('basis'));
   return root;
@@ -360,6 +395,9 @@ function renderTripTab(ev) {
   addDiv.append(addTitle, addRow);
   root.appendChild(addDiv);
 
+  // Restore deleted items link
+  root.appendChild(makeRestoreLink(ev.id));
+
   function doAdd() {
     const text = inp.value.trim();
     if (!text) { inp.focus(); return; }
@@ -381,6 +419,35 @@ function renderTripTab(ev) {
 
   requestAnimationFrame(() => refreshProgress(ev.id));
   return root;
+}
+
+// ── Restore deleted items link ─────────────────────────────
+
+function makeRestoreLink(eventId) {
+  const wrap = document.createElement('div');
+  wrap.className = 'restore-wrap';
+
+  function updateVisibility() {
+    const removed = getRemovedItems(eventId);
+    wrap.style.display = removed.size > 0 ? '' : 'none';
+  }
+
+  const link = document.createElement('button');
+  link.className = 'btn-restore';
+  link.textContent = '↺ Ausgeblendete Items wiederherstellen';
+
+  link.addEventListener('click', () => {
+    const s = getState(eventId);
+    s.removed_items = [];
+    saveState(eventId, s);
+    // Force full re-render of current tab
+    activeTab = null;
+    switchTab(eventId);
+  });
+
+  wrap.appendChild(link);
+  updateVisibility();
+  return wrap;
 }
 
 // ── Progress bar DOM ───────────────────────────────────────

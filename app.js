@@ -2,14 +2,155 @@
 
 const LS = 'packliste_2026_';
 
+// Fixed Firestore document — no auth needed.
+// Change this path if you want to reset or use a different "family".
+const FB_DOC = 'packliste2026/holzer';
+
+// ── In-memory cache ───────────────────────────────────────
+// Populated from Firestore on load; kept in sync via onSnapshot.
+
+const _cache = {};
+
 function getState(id) {
+  if (_cache[id] !== undefined) return { ..._cache[id] };
   try { return JSON.parse(localStorage.getItem(LS + id) || '{}'); }
   catch { return {}; }
 }
 
 function saveState(id, s) {
-  localStorage.setItem(LS + id, JSON.stringify(s));
+  _cache[id] = { ...s };
+  try { localStorage.setItem(LS + id, JSON.stringify(s)); } catch {}
+  _fbSave(id, s);
 }
+
+// ── Firebase / Firestore ──────────────────────────────────
+
+let _db = null, _appReady = false, _unsubSnap = null, _pendingSaves = 0;
+
+function _fbSave(id, state) {
+  if (!_db) return;
+  _pendingSaves++;
+  _setSyncStatus('saving');
+  _db.doc(FB_DOC)
+    .set({ [id]: JSON.stringify(state) }, { merge: true })
+    .then(() => {
+      _pendingSaves--;
+      if (_pendingSaves === 0) _setSyncStatus('ok');
+    })
+    .catch(e => {
+      _pendingSaves--;
+      console.warn('[Firebase] write error:', e);
+      _setSyncStatus('error');
+    });
+}
+
+function _fbSetupSync() {
+  if (_unsubSnap) _unsubSnap();
+
+  // If Firestore doesn't respond within 4s (offline / wrong config), show app from localStorage
+  const fallback = setTimeout(() => {
+    if (!_appReady) {
+      _appReady = true;
+      _hideLoading();
+      buildTabs();
+      switchTab('basis');
+    }
+  }, 4000);
+
+  _unsubSnap = _db.doc(FB_DOC).onSnapshot(snap => {
+    clearTimeout(fallback);
+    if (snap.exists) {
+      const data = snap.data();
+      let changed = false;
+      Object.entries(data).forEach(([key, raw]) => {
+        try {
+          const parsed = JSON.parse(raw);
+          if (JSON.stringify(_cache[key]) !== JSON.stringify(parsed)) {
+            _cache[key] = parsed;
+            try { localStorage.setItem(LS + key, raw); } catch {}
+            changed = true;
+          }
+        } catch {}
+      });
+
+      if (!_appReady) {
+        _appReady = true;
+        _hideLoading();
+        buildTabs();
+        switchTab('basis');
+      } else if (changed && activeTab) {
+        // Re-render when another device changed data
+        const tab = activeTab;
+        activeTab = null;
+        switchTab(tab);
+      }
+    } else {
+      // No Firestore data yet — migrate localStorage and start
+      _fbMigrateLocalStorage();
+      if (!_appReady) {
+        _appReady = true;
+        _hideLoading();
+        buildTabs();
+        switchTab('basis');
+      }
+    }
+  }, err => {
+    clearTimeout(fallback);
+    console.warn('[Firebase] listener error:', err);
+    _setSyncStatus('error');
+    if (!_appReady) {
+      _appReady = true;
+      _hideLoading();
+      buildTabs();
+      switchTab('basis');
+    }
+  });
+}
+
+function _fbMigrateLocalStorage() {
+  if (!_db) return;
+  const ids = ['basis', ...EVENTS.map(e => e.id)];
+  const updates = {};
+  ids.forEach(id => {
+    const raw = localStorage.getItem(LS + id);
+    if (raw && raw !== '{}') {
+      try { JSON.parse(raw); updates[id] = raw; } catch {}
+    }
+  });
+  if (Object.keys(updates).length > 0) {
+    _db.doc(FB_DOC).set(updates, { merge: true })
+      .catch(e => console.warn('[Firebase] migration error:', e));
+  }
+}
+
+function _hideLoading() {
+  const el = document.getElementById('loadingOverlay');
+  if (el) el.style.display = 'none';
+}
+
+function _setSyncStatus(state) {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  if (state === 'ok')     { el.textContent = '●'; el.className = 'sync-status sync-ok'; el.title = 'Synchronisiert'; }
+  if (state === 'saving') { el.textContent = '●'; el.className = 'sync-status sync-saving'; el.title = 'Speichert…'; }
+  if (state === 'error')  { el.textContent = '●'; el.className = 'sync-status sync-error'; el.title = 'Sync-Fehler (offline?)'; }
+}
+
+function initFirebase() {
+  try {
+    firebase.initializeApp(FIREBASE_CONFIG);
+    _db = firebase.firestore();
+    _fbSetupSync();
+  } catch (e) {
+    console.error('[Firebase] init error:', e);
+    // Fallback: run with localStorage only
+    _hideLoading();
+    buildTabs();
+    switchTab('basis');
+  }
+}
+
+// ── Utility ───────────────────────────────────────────────
 
 function esc(str) {
   return String(str)
@@ -21,7 +162,7 @@ function getRemovedItems(id) {
   return new Set(getState(id).removed_items || []);
 }
 
-// ── Progress ─────────────────────────────────────────────
+// ── Progress ──────────────────────────────────────────────
 
 function calcProgress(eventId) {
   const s = getState(eventId);
@@ -137,10 +278,8 @@ function makeCategoryBlock(cat, eventId, onBadgeChange, showTitle = true) {
   const ul = document.createElement('ul');
   ul.className = 'checklist';
 
-  // Predefined items
   visiblePredefined.forEach(item => ul.appendChild(makeCheckItem(item, eventId, onBadgeChange)));
 
-  // Inline custom items for this category
   function renderCustomItems() {
     ul.querySelectorAll('li.custom-li').forEach(el => el.remove());
     const s = getState(eventId);
@@ -193,7 +332,6 @@ function makeCategoryBlock(cat, eventId, onBadgeChange, showTitle = true) {
   renderCustomItems();
   div.appendChild(ul);
 
-  // Inline add row
   const addRow = document.createElement('div');
   addRow.className = 'cat-add-row';
 
@@ -217,7 +355,7 @@ function makeCategoryBlock(cat, eventId, onBadgeChange, showTitle = true) {
     const s = getState(eventId);
     if (!s.custom_items) s.custom_items = [];
     s.custom_items.push({
-      id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+      id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
       text, checked: false, category: cat.id
     });
     saveState(eventId, s);
@@ -233,7 +371,7 @@ function makeCategoryBlock(cat, eventId, onBadgeChange, showTitle = true) {
   return div;
 }
 
-// ── Section widget ─────────────────────────────────────────
+// ── Section widget ────────────────────────────────────────
 
 function makeSection(titleHtml, isOpen, collapsible) {
   const sec = document.createElement('div');
@@ -271,7 +409,7 @@ function makeSection(titleHtml, isOpen, collapsible) {
   return { sec, body, badge };
 }
 
-// ── Render basis tab ───────────────────────────────────────
+// ── Render basis tab ──────────────────────────────────────
 
 function renderBasisTab() {
   const root = document.createElement('div');
@@ -300,12 +438,11 @@ function renderBasisTab() {
   return root;
 }
 
-// ── Render trip tab ────────────────────────────────────────
+// ── Render trip tab ───────────────────────────────────────
 
 function renderTripTab(ev) {
   const root = document.createElement('div');
 
-  // Trip header
   const hdr = document.createElement('div');
   hdr.className = 'trip-header';
   hdr.innerHTML = `
@@ -325,7 +462,6 @@ function renderTripTab(ev) {
 
   root.appendChild(makeProgressBar());
 
-  // Basis section — collapsible, starts closed
   const { sec: bSec, body: bBody, badge: bBadge } = makeSection('📋 Basis-Essentials', false, true);
   bSec.classList.add('basis-section');
 
@@ -341,7 +477,6 @@ function renderTripTab(ev) {
   refreshBasis();
   root.appendChild(bSec);
 
-  // Extras section — open by default
   if (ev.extras && ev.extras.length > 0) {
     const { sec: eSec, body: eBody, badge: eBadge } = makeSection('⭐ Trip-spezifische Extras', true, true);
 
@@ -365,7 +500,7 @@ function renderTripTab(ev) {
   return root;
 }
 
-// ── Restore deleted items link ─────────────────────────────
+// ── Restore deleted items ─────────────────────────────────
 
 function makeRestoreLink(eventId) {
   const wrap = document.createElement('div');
@@ -388,7 +523,7 @@ function makeRestoreLink(eventId) {
   return wrap;
 }
 
-// ── Progress bar DOM ───────────────────────────────────────
+// ── Progress bar DOM ──────────────────────────────────────
 
 function makeProgressBar() {
   const wrap = document.createElement('div');
@@ -403,7 +538,7 @@ function makeProgressBar() {
   return wrap;
 }
 
-// ── Tabs ───────────────────────────────────────────────────
+// ── Tabs ──────────────────────────────────────────────────
 
 let activeTab = null;
 
@@ -429,8 +564,8 @@ function buildTabs() {
   const tabs = [
     { id: 'basis', flag: '📋', name: 'Basis' },
     ...EVENTS.map(ev => {
-      let name = ev.name.replace(' Grand Prix',' GP').replace(' MotoGP','').replace('–','/');
-      if (name.length > 15) name = name.slice(0,14) + '…';
+      let name = ev.name.replace(' Grand Prix', ' GP').replace(' MotoGP', '').replace('–', '/');
+      if (name.length > 15) name = name.slice(0, 14) + '…';
       return { id: ev.id, flag: ev.flag, name };
     })
   ];
@@ -445,7 +580,6 @@ function buildTabs() {
   });
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  buildTabs();
-  switchTab('basis');
-});
+// ── Boot ──────────────────────────────────────────────────
+
+document.addEventListener('DOMContentLoaded', initFirebase);
